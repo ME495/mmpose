@@ -1,11 +1,11 @@
 _base_ = ['../../../_base_/default_runtime.py']
 
 # runtime
-max_epochs = 210
-stage2_num_epochs = 30
+max_epochs = 50
+stage2_num_epochs = 5
 base_lr = 4e-3
 
-train_cfg = dict(max_epochs=max_epochs, val_interval=10)
+train_cfg = dict(max_epochs=max_epochs, val_interval=1)
 randomness = dict(seed=21)
 
 # optimizer
@@ -22,19 +22,18 @@ param_scheduler = [
         start_factor=1.0e-5,
         by_epoch=False,
         begin=0,
-        end=1000),
+        end=100),
     dict(
-        type='CosineAnnealingLR',
-        eta_min=base_lr * 0.05,
-        begin=max_epochs // 2,
-        end=max_epochs,
-        T_max=max_epochs // 2,
+        type='MultiStepLR',
+        begin=0,
+        end=50,
         by_epoch=True,
-        convert_to_iter_based=True),
+        milestones=[25, 40],
+        gamma=0.1)
 ]
 
 # automatically scaling LR based on the actual training batch size
-auto_scale_lr = dict(base_batch_size=256)
+auto_scale_lr = dict(base_batch_size=128)
 
 # codec settings
 codec = dict(
@@ -50,8 +49,8 @@ model = dict(
     type='TopdownPoseEstimator',
     data_preprocessor=dict(
         type='PoseDataPreprocessor',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
+        mean=[103.53, 103.53, 103.53],
+        std=[57.375, 57.375, 57.375],
         bgr_to_rgb=True),
     backbone=dict(
         _scope_='mmdet',
@@ -67,8 +66,7 @@ model = dict(
         init_cfg=dict(
             type='Pretrained',
             prefix='backbone.',
-            checkpoint='https://download.openmmlab.com/mmpose/v1/projects/'
-            'rtmposev1/cspnext-m_udp-aic-coco_210e-256x192-f2f7d6f6_20230130.pth'  # noqa
+            checkpoint='work_dirs/rtmpose_m_coco_hand/epoch_210.pth'
         )),
     head=dict(
         type='RTMCCHead',
@@ -98,7 +96,8 @@ model = dict(
 # base dataset settings
 dataset_type = 'CocoWholeBodyHandDataset'
 data_mode = 'topdown'
-data_root = 'data/coco/'
+coco_data_root = 'data/coco_hand_ir/'
+qiyuan_data_root = 'data/qiyuan_data_anno/'
 
 backend_args = dict(backend='local')
 # backend_args = dict(
@@ -110,7 +109,8 @@ backend_args = dict(backend='local')
 
 # pipelines
 train_pipeline = [
-    dict(type='LoadImage', backend_args=backend_args),
+    dict(type='LoadImage', color_type='grayscale', backend_args=backend_args),
+    dict(type='SignalChannelToTripleChannel'),
     dict(type='GetBBoxCenterScale'),
     # dict(type='RandomHalfBody'),
     dict(
@@ -118,7 +118,7 @@ train_pipeline = [
         rotate_factor=180),
     dict(type='RandomFlip', direction='horizontal'),
     dict(type='TopdownAffine', input_size=codec['input_size']),
-    dict(type='mmdet.YOLOXHSVRandomAug'),
+    dict(type='mmdet.YOLOXHSVRandomAug', hue_delta=0., saturation_delta=0.),
     dict(
         type='Albumentation',
         transforms=[
@@ -138,14 +138,16 @@ train_pipeline = [
     dict(type='PackPoseInputs')
 ]
 val_pipeline = [
-    dict(type='LoadImage', backend_args=backend_args),
+    dict(type='LoadImage', color_type='grayscale', backend_args=backend_args),
+    dict(type='SignalChannelToTripleChannel'),
     dict(type='GetBBoxCenterScale'),
     dict(type='TopdownAffine', input_size=codec['input_size']),
     dict(type='PackPoseInputs')
 ]
 
 train_pipeline_stage2 = [
-    dict(type='LoadImage', backend_args=backend_args),
+    dict(type='LoadImage', color_type='grayscale', backend_args=backend_args),
+    dict(type='SignalChannelToTripleChannel'),
     dict(type='GetBBoxCenterScale'),
     # dict(type='RandomHalfBody'),
     dict(
@@ -155,7 +157,7 @@ train_pipeline_stage2 = [
         rotate_factor=180),
     dict(type='RandomFlip', direction='horizontal'),
     dict(type='TopdownAffine', input_size=codec['input_size']),
-    dict(type='mmdet.YOLOXHSVRandomAug'),
+    dict(type='mmdet.YOLOXHSVRandomAug', hue_delta=0., saturation_delta=0.),
     dict(
         type='Albumentation',
         transforms=[
@@ -175,35 +177,73 @@ train_pipeline_stage2 = [
     dict(type='PackPoseInputs')
 ]
 
+dataset_coco_train = dict(
+    type=dataset_type,
+    data_root=coco_data_root,
+    data_mode=data_mode,
+    ann_file='coco_wholebody_train_v1.0.json',
+    data_prefix=dict(img='train2017/'),
+    pipeline=[],
+)
+
+dataset_coco_val = dict(
+    type=dataset_type,
+    data_root=coco_data_root,
+    data_mode=data_mode,
+    ann_file='coco_wholebody_val_v1.0.json',
+    data_prefix=dict(img='val2017/'),
+    test_mode=True,
+    pipeline=[],
+)
+
+dataset_qiyuan_train = dict(
+    type=dataset_type,
+    data_root=qiyuan_data_root,
+    data_mode=data_mode,
+    ann_file='train.json',
+    data_prefix=dict(img=''),
+    pipeline=[],
+)
+
+dataset_qiyuan_val = dict(
+    type=dataset_type,
+    data_root=qiyuan_data_root,
+    data_mode=data_mode,
+    ann_file='val.json',
+    data_prefix=dict(img=''),
+    pipeline=[],
+)
+
+dataset_train = dict(
+    type='CombinedDataset',
+    metainfo=dict(from_file='../../../_base_/datasets/coco_wholebody_hand.py'),
+    datasets=[dataset_coco_train, dataset_qiyuan_train],
+    pipeline=train_pipeline,
+    test_mode=False
+)
+
+dataset_val = dict(
+    type='CombinedDataset',
+    metainfo=dict(from_file='../../../_base_/datasets/coco_wholebody_hand.py'),
+    datasets=[dataset_qiyuan_val],
+    pipeline=val_pipeline,
+    test_mode=True,
+)
+
 # data loaders
 train_dataloader = dict(
-    batch_size=32,
+    batch_size=128,
     num_workers=10,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
-    dataset=dict(
-        type=dataset_type,
-        data_root=data_root,
-        data_mode=data_mode,
-        ann_file='annotations/coco_wholebody_train_v1.0.json',
-        data_prefix=dict(img='train2017/'),
-        pipeline=train_pipeline,
-    ))
+    dataset=dataset_train)
 val_dataloader = dict(
-    batch_size=32,
+    batch_size=128,
     num_workers=10,
     persistent_workers=True,
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False, round_up=False),
-    dataset=dict(
-        type=dataset_type,
-        data_root=data_root,
-        data_mode=data_mode,
-        ann_file='annotations/coco_wholebody_val_v1.0.json',
-        data_prefix=dict(img='val2017/'),
-        test_mode=True,
-        pipeline=val_pipeline,
-    ))
+    dataset=dataset_val)
 test_dataloader = val_dataloader
 
 # hooks
